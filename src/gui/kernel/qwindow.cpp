@@ -1893,6 +1893,10 @@ QScreen *QWindowPrivate::screenForGeometry(const QRect &newGeometry) const
     QScreen *fallback = currentScreen;
     QPoint center = newGeometry.center();
     if (!q->parent() && currentScreen && !currentScreen->geometry().contains(center)) {
+#ifdef Q_OS_WIN
+        if (q->property(qEmbeddedNativeParentHandleProperty).isValid()) // bricscad change
+            return fallback;
+#endif
         const auto screens = currentScreen->virtualSiblings();
         for (QScreen* screen : screens) {
             if (screen->geometry().contains(center))

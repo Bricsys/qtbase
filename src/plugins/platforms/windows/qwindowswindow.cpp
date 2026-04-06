@@ -2367,7 +2367,8 @@ void QWindowsWindow::checkForScreenChanged(ScreenChangeMode mode, const RECT *su
         return;
 
     QPlatformScreen *currentScreen = screen();
-    auto topLevel = isTopLevel_sys() ? m_data.hwnd : GetAncestor(m_data.hwnd, GA_ROOT);
+    const bool embedded = window()->property(qEmbeddedNativeParentHandleProperty).isValid(); // bricscad change
+    auto topLevel = (isTopLevel_sys() || embedded) ? m_data.hwnd : GetAncestor(m_data.hwnd, GA_ROOT); // bricscad change
     const QWindowsScreen *newScreen = suggestedRect ?
         QWindowsContext::instance()->screenManager().screenForRect(suggestedRect) :
         QWindowsContext::instance()->screenManager().screenForHwnd(topLevel);
