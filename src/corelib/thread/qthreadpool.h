@@ -14,6 +14,12 @@
 #include <functional>
 #endif
 
+// Define to enable cooperative thread-pool safety around Windows LoadLibrary
+// calls (RM-48183). Comment out to compile without the fix on any platform.
+#ifdef Q_OS_WIN
+#  define QTHREADPOOL_LOADER_LOCK_SAFE
+#endif
+
 QT_BEGIN_NAMESPACE
 
 class QThreadPoolPrivate;
@@ -81,6 +87,19 @@ public:
     void clear();
 
     bool contains(const QThread *thread) const;
+
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+    static void beginCriticalSection() noexcept;
+    static void endCriticalSection() noexcept;
+
+    // Pre-warms this pool by requesting up to maxThreadCount() worker threads
+    // to be created. Call BEFORE entering a context that holds the Windows
+    // Loader Lock (e.g. before LoadLibrary), together with
+    // beginCriticalSection(), so that tasks submitted to THIS pool during the
+    // critical section are served by the pre-warmed threads instead of spawning
+    // new ones (RM-48183).
+    void preWarmThreads() noexcept;
+#endif
 
     [[nodiscard]] bool tryTake(QRunnable *runnable);
 };
