@@ -122,6 +122,10 @@ void QThreadPoolThread::run()
             return;
         }
         manager->waitingThreads.enqueue(this);
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+        // Notify a possible preWarmThreads() waiter that this thread is now idle.
+        manager->threadWarmedUp.wakeAll();
+#endif
         registerThreadInactive();
         // wait for work, exiting after the expiry timeout is reached
         runnableReady.wait(locker.mutex(), QDeadlineTimer(manager->expiryTimeout));
@@ -932,7 +936,8 @@ void QThreadPool::beginCriticalSection() noexcept
     \since 6.10
 
     Pre-warms this pool by requesting up to maxThreadCount() worker threads to
-    be created.
+    be created, and waits briefly (up to a few milliseconds) for them to finish
+    OS-level initialisation and park as idle workers.
 
     This must be called BEFORE the current thread enters a context that holds
     the Windows Loader Lock (e.g. before LoadLibrary): here the lock is not
@@ -941,6 +946,10 @@ void QThreadPool::beginCriticalSection() noexcept
     new threads from being created, and tasks submitted to this pool are served
     by the workers warmed up here — avoiding a deadlock on the Loader Lock
     (RM-48183).
+
+    The wait is bounded by a short deadline: it normally returns as soon as the
+    last worker parks (woken via threadWarmedUp), and never blocks the caller
+    for long even if a worker is slow to start.
 
     \sa beginCriticalSection(), endCriticalSection()
 */
@@ -954,11 +963,31 @@ void QThreadPool::preWarmThreads() noexcept
     // restarted without startThread(), so they don't consume a new slot).
     const int newSlots   = maxThreads - (int)d->allThreads.size() + (int)d->expiredThreads.size();
 
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+    // Snapshot before startThread() calls so the wait target is based on the
+    // number of workers idle before we started pre-warming.
+    const int waitingNow = d->waitingThreads.size();
+#endif
+
     // Pre-warm the pool to maxThreadCount() idle threads so every task
     // submitted during the critical section finds a waiting thread and avoids
     // the "start new thread" path that would deadlock.
     for (int i = 0; i < newSlots; ++i)
         d->startThread(nullptr);
+
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+    // Wait until the pre-warmed threads have parked themselves in
+    // waitingThreads, so they are guaranteed idle before the caller acquires
+    // the Loader Lock. Bounded by a short deadline to avoid ever blocking the
+    // caller: threadWarmedUp is woken as each worker parks, so in practice this
+    // returns almost immediately.
+    const int target = waitingNow + qMax(0, newSlots);
+    QDeadlineTimer warmupDeadline(std::chrono::milliseconds(10));
+    while (d->waitingThreads.size() < target && !warmupDeadline.hasExpired()) {
+        if (!d->threadWarmedUp.wait(locker.mutex(), warmupDeadline))
+            break;
+    }
+#endif
 }
 
 /*!
