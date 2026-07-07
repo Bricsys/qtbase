@@ -138,6 +138,13 @@ public:
     QQueue<QThreadPoolThread *> expiredThreads;
     QList<QueuePage *> queue;
     QWaitCondition noActiveThreads;
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+    // Woken by a worker thread once it has finished OS-level initialisation and
+    // enqueued itself into waitingThreads. preWarmThreads() waits on this so
+    // that pre-warmed threads are parked (idle) before it returns, and thus
+    // before the caller acquires the Loader Lock via LoadLibrary.
+    QWaitCondition threadWarmedUp;
+#endif
     QString objectName;
 
     std::chrono::duration<int, std::milli> expiryTimeout = std::chrono::seconds(30);

@@ -93,7 +93,8 @@ public:
     static void endCriticalSection() noexcept;
 
     // Pre-warms this pool by requesting up to maxThreadCount() worker threads
-    // to be created. Call BEFORE entering a context that holds the Windows
+    // to be created, waiting briefly (bounded, a few ms) for them to park as
+    // idle workers. Call BEFORE entering a context that holds the Windows
     // Loader Lock (e.g. before LoadLibrary), together with
     // beginCriticalSection(), so that tasks submitted to THIS pool during the
     // critical section are served by the pre-warmed threads instead of spawning
