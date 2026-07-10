@@ -17,6 +17,13 @@ using namespace std::chrono_literals;
 
 QT_BEGIN_NAMESPACE
 
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+// Thread-local depth counter for critical sections (e.g. Windows DllMain).
+// When non-zero, tryStart() must not create or restart OS threads.
+// A counter rather than a flag supports nested begin/endCriticalSection() calls.
+Q_CONSTINIT static thread_local int s_noNewThreadDepth = 0;
+#endif
+
 using namespace Qt::StringLiterals;
 
 /*
@@ -115,6 +122,10 @@ void QThreadPoolThread::run()
             return;
         }
         manager->waitingThreads.enqueue(this);
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+        // Notify a possible preWarmThreads() waiter that this thread is now idle.
+        manager->threadWarmedUp.wakeAll();
+#endif
         registerThreadInactive();
         // wait for work, exiting after the expiry timeout is reached
         runnableReady.wait(locker.mutex(), QDeadlineTimer(manager->expiryTimeout));
@@ -147,6 +158,7 @@ QThreadPoolPrivate:: QThreadPoolPrivate()
 bool QThreadPoolPrivate::tryStart(QRunnable *task)
 {
     Q_ASSERT(task != nullptr);
+
     if (allThreads.isEmpty()) {
         // always create at least one thread
         startThread(task);
@@ -180,6 +192,19 @@ bool QThreadPoolPrivate::tryStart(QRunnable *task)
         thread->start(threadPriority);
         return true;
     }
+
+    // When inside a critical section (e.g. Windows DllMain while the Loader
+    // Lock is held), creating a new OS thread would deadlock: the new thread
+    // blocks in LdrpInitializeThread waiting for the same lock. The caller is
+    // expected to have pre-warmed the pool (QThreadPool::preWarmThreads())
+    // before entering the section, so tasks are served by the waitingThreads
+    // path above. This guard is the safety net for the unlikely case where all
+    // pre-warmed threads were already busy: enqueue the task instead of
+    // spawning a thread; the busy threads drain the queue when they finish.
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+    if (s_noNewThreadDepth > 0)
+        return false;
+#endif
 
     // start a new thread
     startThread(task);
@@ -246,7 +271,11 @@ bool QThreadPoolPrivate::tooManyThreadsActive() const
 */
 void QThreadPoolPrivate::startThread(QRunnable *runnable)
 {
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+    // runnable may be nullptr to pre-warm an idle thread (see preWarmThreads()).
+#else
     Q_ASSERT(runnable != nullptr);
+#endif
     auto thread = std::make_unique<QThreadPoolThread>(this);
     if (objectName.isEmpty())
         objectName = u"Thread (pooled)"_s;
@@ -878,6 +907,102 @@ bool QThreadPool::contains(const QThread *thread) const
     QMutexLocker locker(&d->mutex);
     return d->allThreads.contains(const_cast<QThreadPoolThread *>(poolThread));
 }
+
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+/*!
+    \since 6.10
+
+    Marks the beginning of a critical section on the current thread.  While
+    inside a critical section, QThreadPool will not create new OS threads on
+    this thread (in any pool): tasks that would otherwise spawn a worker are
+    enqueued instead and served by already-idle threads.
+
+    Use together with preWarmThreads() on the pool(s) you expect to be used
+    inside the section, so that those pools have idle workers ready.  Call
+    endCriticalSection() to leave the region.  Calls may be nested — the
+    restriction is lifted only after the outermost endCriticalSection() call.
+
+    The primary use case is Windows \c DllMain, where the Loader Lock is held
+    for its entire duration and spawning a new OS thread would deadlock.
+
+    \sa endCriticalSection(), preWarmThreads()
+*/
+void QThreadPool::beginCriticalSection() noexcept
+{
+    ++s_noNewThreadDepth;
+}
+
+/*!
+    \since 6.10
+
+    Pre-warms this pool by requesting up to maxThreadCount() worker threads to
+    be created, and waits briefly (up to a few milliseconds) for them to finish
+    OS-level initialisation and park as idle workers.
+
+    This must be called BEFORE the current thread enters a context that holds
+    the Windows Loader Lock (e.g. before LoadLibrary): here the lock is not
+    held, so the newly created workers can complete LdrpInitializeThread and
+    become idle.  Once inside such a context, beginCriticalSection() prevents
+    new threads from being created, and tasks submitted to this pool are served
+    by the workers warmed up here — avoiding a deadlock on the Loader Lock
+    (RM-48183).
+
+    The wait is bounded by a short deadline: it normally returns as soon as the
+    last worker parks (woken via threadWarmedUp), and never blocks the caller
+    for long even if a worker is slow to start.
+
+    \sa beginCriticalSection(), endCriticalSection()
+*/
+void QThreadPool::preWarmThreads() noexcept
+{
+    Q_D(QThreadPool);
+    QMutexLocker locker(&d->mutex);
+
+    const int maxThreads = d->maxThreadCount();
+    // Slots available for genuinely new threads (expired threads can be
+    // restarted without startThread(), so they don't consume a new slot).
+    const int newSlots   = maxThreads - (int)d->allThreads.size() + (int)d->expiredThreads.size();
+
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+    // Snapshot before startThread() calls so the wait target is based on the
+    // number of workers idle before we started pre-warming.
+    const int waitingNow = d->waitingThreads.size();
+#endif
+
+    // Pre-warm the pool to maxThreadCount() idle threads so every task
+    // submitted during the critical section finds a waiting thread and avoids
+    // the "start new thread" path that would deadlock.
+    for (int i = 0; i < newSlots; ++i)
+        d->startThread(nullptr);
+
+#ifdef QTHREADPOOL_LOADER_LOCK_SAFE
+    // Wait until the pre-warmed threads have parked themselves in
+    // waitingThreads, so they are guaranteed idle before the caller acquires
+    // the Loader Lock. Bounded by a short deadline to avoid ever blocking the
+    // caller: threadWarmedUp is woken as each worker parks, so in practice this
+    // returns almost immediately.
+    const int target = waitingNow + qMax(0, newSlots);
+    QDeadlineTimer warmupDeadline(std::chrono::milliseconds(10));
+    while (d->waitingThreads.size() < target && !warmupDeadline.hasExpired()) {
+        if (!d->threadWarmedUp.wait(locker.mutex(), warmupDeadline))
+            break;
+    }
+#endif
+}
+
+/*!
+    \since 6.10
+
+    Leaves a critical section entered with beginCriticalSection().
+
+    \sa beginCriticalSection()
+*/
+void QThreadPool::endCriticalSection() noexcept
+{
+    if (s_noNewThreadDepth > 0)
+        --s_noNewThreadDepth;
+}
+#endif // QTHREADPOOL_LOADER_LOCK_SAFE
 
 QT_END_NAMESPACE
 
