@@ -30,6 +30,10 @@ QT_BEGIN_NAMESPACE
 
 Q_DECLARE_LOGGING_CATEGORY(lcHighDpi);
 
+#ifdef Q_OS_WIN
+inline constexpr char qEmbeddedNativeParentHandleProperty[] = "_q_embedded_native_parent_handle"; // bricscad change
+#endif
+
 class QScreen;
 class QPlatformScreen;
 typedef std::pair<qreal, qreal> QDpi;
@@ -255,7 +259,12 @@ template <typename T, typename C>
 T fromNativeWindowGeometry(const T &value, const C *context)
 {
     QHighDpiScaling::ScaleAndOrigin so = QHighDpiScaling::scaleAndOrigin(context);
+#ifdef Q_OS_WIN
+    const bool isEmbedded = context && context->property(qEmbeddedNativeParentHandleProperty).isValid(); // bricscad change
+    QPoint effectiveOrigin = (context && context->isTopLevel() && !isEmbedded) ? so.origin : QPoint(0,0);
+#else
     QPoint effectiveOrigin = (context && context->isTopLevel()) ? so.origin : QPoint(0,0);
+#endif
     return scale(value, qreal(1) / so.factor, effectiveOrigin);
 }
 
@@ -263,7 +272,12 @@ template <typename T, typename C>
 T toNativeWindowGeometry(const T &value, const C *context)
 {
     QHighDpiScaling::ScaleAndOrigin so = QHighDpiScaling::scaleAndOrigin(context);
+#ifdef Q_OS_WIN
+    const bool isEmbedded = context && context->property(qEmbeddedNativeParentHandleProperty).isValid(); // bricscad change
+    QPoint effectiveOrigin = (context && context->isTopLevel() && !isEmbedded) ? so.origin : QPoint(0,0);
+#else
     QPoint effectiveOrigin = (context && context->isTopLevel()) ? so.origin : QPoint(0,0);
+#endif
     return scale(value, so.factor, effectiveOrigin);
 }
 
