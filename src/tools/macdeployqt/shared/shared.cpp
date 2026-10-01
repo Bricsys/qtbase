@@ -995,10 +995,12 @@ DeploymentInfo deployQtFrameworks(QList<FrameworkInfo> frameworks,
         const FrameworkInfo framework = frameworks.takeFirst();
         copiedFrameworks.append(framework.frameworkName);
 
-        // If a single dependency has the _debug suffix, we treat that as
+        // If a single Qt dependency has the _debug suffix, we treat that as
         // the whole deployment being a debug deployment, including deploying
         // the debug version of plugins.
-        if (framework.isDebugLibrary())
+        if (framework.isDebugLibrary()
+            && (framework.binaryName.startsWith(QStringLiteral("Qt"))
+                || framework.binaryName.startsWith(QStringLiteral("libQt"))))
             deploymentInfo.isDebug = true;
 
         if (deploymentInfo.qtPath.isNull())
