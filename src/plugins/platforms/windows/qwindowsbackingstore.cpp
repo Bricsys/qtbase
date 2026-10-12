@@ -56,7 +56,9 @@ void QWindowsBackingStore::flush(QWindow *window, const QRegion &region,
     // Note: This condition must be in sync with setWindowOpacity. FIXME: Improve this :)
     if (rw->isLayered() && hasAlpha && QWindowsWindow::hasNoNativeFrame(rw->handle(), flags)) {
         // Windows with alpha: Use blend function to update.
-        QRect r = QHighDpi::toNativePixels(window->frameGeometry(), window);
+        // bricscad change: child/embedded frame geometry is parent-relative; do not
+        // scale it around the screen origin (matches QWindow::setGeometry).
+        QRect r = QHighDpi::toNativeWindowGeometry(window->frameGeometry(), window);
         QMargins frameMargins = rw->frameMargins();
         QRect dirtyRect = br.translated(offset + QPoint(frameMargins.left(), frameMargins.top()));
 
