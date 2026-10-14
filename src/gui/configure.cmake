@@ -867,6 +867,7 @@ qt_config_compile_test(vulkan_server_buffer
     LABEL "Vulkan Buffer Sharing"
     LIBRARIES
     Wayland::Client
+    WrapVulkanHeaders::WrapVulkanHeaders
     CODE
     "#define VK_USE_PLATFORM_WAYLAND_KHR 1
 #include <vulkan/vulkan.h>
