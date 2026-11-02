@@ -1865,7 +1865,14 @@ void QWindow::setGeometry(const QRect &rect)
 
     d->positionPolicy = QWindowPrivate::WindowFrameExclusive;
     if (d->platformWindow) {
-        if (isTopLevel()) {
+#ifdef Q_OS_WIN
+        // bricscad change: embedded windows have parent-relative geometry,
+        // so they must not be converted as global screen positions.
+        const bool isEmbedded = property(qEmbeddedNativeParentHandleProperty).isValid();
+#else
+        const bool isEmbedded = false;
+#endif
+        if (isTopLevel() && !isEmbedded) {
             QScreen *newScreen = d->screenForGeometry(rect);
             d->platformWindow->setGeometry(QHighDpi::toNativeGlobalPosition(rect, newScreen));
         } else {
