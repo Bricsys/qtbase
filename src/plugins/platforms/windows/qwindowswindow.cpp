@@ -2389,8 +2389,18 @@ void QWindowsWindow::checkForScreenChanged(ScreenChangeMode mode, const RECT *su
 
     QPlatformScreen *currentScreen = screen();
     const bool embedded = window()->property(qEmbeddedNativeParentHandleProperty).isValid(); // bricscad change
+    QWindow *screenChangeWindow = window();
+    // bricscad change: foreign top levels do not receive native screen/DPI messages,
+    // so report the screen change on the foreign top level when a Qt child detects it.
+    // The monitor still comes from the native root: the foreign HWND may itself be a
+    // child window, and Windows assigns child windows the DPI of their root.
+    QWindow *topLevelWindow = QWindowPrivate::get(window())->topLevelWindow(QWindow::ExcludeTransients);
+    const bool foreignTopLevel = topLevelWindow->handle() && topLevelWindow->handle()->isForeignWindow()
+        && IsChild(reinterpret_cast<HWND>(topLevelWindow->winId()), m_data.hwnd);
+    if (foreignTopLevel)
+        screenChangeWindow = topLevelWindow;
     auto topLevel = (isTopLevel_sys() || embedded) ? m_data.hwnd : GetAncestor(m_data.hwnd, GA_ROOT); // bricscad change
-    const QWindowsScreen *newScreen = suggestedRect ?
+    const QWindowsScreen *newScreen = suggestedRect && !foreignTopLevel ?
         QWindowsContext::instance()->screenManager().screenForRect(suggestedRect) :
         QWindowsContext::instance()->screenManager().screenForHwnd(topLevel);
 
@@ -2406,7 +2416,7 @@ void QWindowsWindow::checkForScreenChanged(ScreenChangeMode mode, const RECT *su
         << ' ' << window() << " \"" << (currentScreen ? currentScreen->name() : QString())
         << "\"->\"" << newScreen->name() << '"';
     updateFullFrameMargins();
-    QWindowSystemInterface::handleWindowScreenChanged<QWindowSystemInterface::SynchronousDelivery>(window(), newScreen->screen());
+    QWindowSystemInterface::handleWindowScreenChanged<QWindowSystemInterface::SynchronousDelivery>(screenChangeWindow, newScreen->screen());
 }
 
 void QWindowsWindow::handleGeometryChange()
